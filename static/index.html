@@ -3,51 +3,120 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HLS Stream Player</title>
-
+    <title>HLS + WebRTC Stream</title>
     <style>
         body {
             display: flex;
-            justify-content: center;
+            flex-direction: column;
             align-items: center;
             height: 100vh;
             background-color: #000;
             margin: 0;
         }
-
         video {
             width: 80%;
             max-width: 720px;
-            height: auto;
+            margin-top: 10px;
             border: 2px solid #fff;
             border-radius: 10px;
-            background-color: #000;
         }
     </style>
 </head>
 <body>
     <video id="hls-video" controls autoplay muted></video>
+    <video id="webrtcvideo" autoplay playsinline></video>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/8.2.3/adapter.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-    <script>
-        const video = document.getElementById('hls-video');
-        const videoSrc = '/hls/front/stream.m3u8'; // HLS 스트림 URL
+    <script src="janus.js"></script>
 
+    <script>
+        const hlsVideo = document.getElementById('hls-video');
+        const webrtcVideo = document.getElementById('webrtcvideo');
+
+        const serverIp = window.location.hostname;
+
+        // HLS 스트림 설정
+        const hlsSrc = `http://${serverIp}/hls/front/stream.m3u8`;
         if (Hls.isSupported()) {
             const hls = new Hls();
-            hls.loadSource(videoSrc);
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, function () {
-                video.play();
+            hls.loadSource(hlsSrc);
+            hls.attachMedia(hlsVideo);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                hlsVideo.play();
             });
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            video.src = videoSrc;
-            video.addEventListener('loadedmetadata', function () {
-                video.play();
+        } else if (hlsVideo.canPlayType('application/vnd.apple.mpegurl')) {
+            hlsVideo.src = hlsSrc;
+            hlsVideo.addEventListener('loadedmetadata', () => {
+                hlsVideo.play();
             });
-        } else {
-            alert('HLS를 지원하지 않는 브라우저입니다.');
+        }
+
+        // Janus WebRTC 설정
+        const janusServer = `http://${serverIp}:8088/janus`;
+        let janus = null;
+        let streaming = null;
+        let selectedStream = 1;
+
+        Janus.init({
+            debug: "all",
+            callback: function() {
+                janus = new Janus({
+                    server: janusServer,
+                    success: function() {
+                        janus.attach({
+                            plugin: "janus.plugin.streaming",
+                            success: function(pluginHandle) {
+                                streaming = pluginHandle;
+                                startStream();
+                            },
+                            error: function(error) {
+                                console.error("Plugin attach error:", error);
+                            },
+                            onmessage: function(msg, jsep) {
+                                handleJanusMessage(msg, jsep);
+                            },
+                            onremotetrack: function(track, mid, on) {
+                                handleRemoteTrack(track, on);
+                            },
+                        });
+                    },
+                    error: function(error) {
+                        console.error("Janus error:", error);
+                    }
+                });
+            }
+        });
+
+        function startStream() {
+            const body = { request: "watch", id: selectedStream };
+            streaming.send({ message: body });
+        }
+
+        function handleJanusMessage(msg, jsep) {
+            if (jsep) {
+                streaming.createAnswer({
+                    jsep: jsep,
+                    media: { audioSend: false, videoSend: false },
+                    success: function(jsep) {
+                        streaming.send({ message: { request: "start" }, jsep: jsep });
+                    },
+                    error: function(error) {
+                        console.error("WebRTC error:", error);
+                    }
+                });
+            }
+        }
+
+        function handleRemoteTrack(track, on) {
+            if (on) {
+                const stream = new MediaStream([track]);
+                webrtcVideo.srcObject = stream;
+            } else {
+                webrtcVideo.srcObject = null;
+            }
         }
     </script>
 </body>
 </html>
+
